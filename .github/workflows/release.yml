@@ -1,0 +1,128 @@
+# PanBox 三平台发布构建（Windows NSIS / Android APK / iOS TrollStore）
+# 构建壳仓：不含源码——经最小权限 PAT 只读检出私有源码仓 alonjoik/panbox 完成构建，
+# 三平台并行产物统一挂同一个 Draft Release（方案见主仓 docs/ci-cd-multiplatform.md）。
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（须与 src-tauri/tauri.conf.json 的 version 一致，如 0.1.11）'
+        required: true
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, name: windows }
+          - { os: ubuntu-latest,  name: android }
+          - { os: macos-14,       name: ios }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alonjoik/panbox        # 私有源码仓（PRIVATE_REPO_TOKEN 仅只读该仓）
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+
+      # 版本漂移提醒：产物内嵌版本以 tauri.conf.json 为准
+      - name: Version check
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          CONF=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "v$CONF" != "${{ github.event.inputs.version }}" ] && [ "$CONF" != "${{ github.event.inputs.version }}" ]; then
+            echo "::warning::输入版本 ${{ github.event.inputs.version }} 与 tauri.conf.json 的 $CONF 不一致，产物内嵌版本以 conf 为准"
+          fi
+
+      # —— Windows：NSIS 安装包（砍 MSI：WiX 慢、体积翻倍且从不分发）——
+      - name: Build Windows (NSIS)
+        if: matrix.name == 'windows'
+        run: npx tauri build --bundles nsis
+
+      # —— Android：JDK17 + NDK + 双架构 APK（gen/ 不入库，CI 内 init + sed 补丁）——
+      - uses: actions/setup-java@v4
+        if: matrix.name == 'android'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        if: matrix.name == 'android'
+      - name: Install NDK
+        if: matrix.name == 'android'
+        run: sdkmanager --install "ndk;27.0.12077973" >/dev/null
+      - name: Add Android rust targets
+        if: matrix.name == 'android'
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi
+      - name: Build Android APK (arm64 + armv7)
+        if: matrix.name == 'android'
+        run: |
+          npx tauri android init
+          # 允许 http 明文流量（源站多为 http）
+          sed -i 's|<application|<application android:usesCleartextTraffic="true"|' gen/android/app/src/main/AndroidManifest.xml
+          npx tauri android build --apk --target aarch64,armv7
+
+      # —— iOS：TrollStore 免签链（unsigned archive + ldid ad-hoc 重签）——
+      - name: Add iOS rust target
+        if: matrix.name == 'ios'
+        run: rustup target add aarch64-apple-ios
+      - name: Build iOS (unsigned archive)
+        if: matrix.name == 'ios'
+        run: |
+          npx tauri ios init
+          # 允许 http 明文流量
+          PLIST=$(find gen/apple -name "*_Info.plist" | head -1)
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$PLIST" || true
+          npx tauri ios build --target ios_aarch64 --export-method debugging || true
+      - name: Repack IPA (ad-hoc sign via ldid)
+        if: matrix.name == 'ios'
+        run: |
+          brew install ldid
+          APP=$(find src-tauri/gen/apple/build -type d -name "*.app" -path "*Debug*" | head -1)
+          [ -z "$APP" ] && APP=$(find src-tauri/gen/apple/build -type d -name "*.app" | head -1)
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          ldid -S "Payload/$(basename "$APP")/$(basename "$APP" .app)"
+          zip -qry PanBox-trollstore.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.name }}
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+            PanBox-trollstore.ipa
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          ls -la dist/
+          gh release create "$VERSION" --draft --title "PanBox $VERSION" dist/* || \
+          gh release upload "$VERSION" dist/*
