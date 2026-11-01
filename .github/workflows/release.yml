@@ -77,8 +77,8 @@ jobs:
         if: matrix.name == 'android'
         run: |
           npx tauri android init
-          # 允许 http 明文流量（源站多为 http）
-          sed -i 's|<application|<application android:usesCleartextTraffic="true"|' gen/android/app/src/main/AndroidManifest.xml
+          # 允许 http 明文流量（源站多为 http；init 生成于 src-tauri/gen/android）
+          sed -i 's|<application|<application android:usesCleartextTraffic="true"|' src-tauri/gen/android/app/src/main/AndroidManifest.xml
           npx tauri android build --apk --target aarch64,armv7
 
       # —— iOS：TrollStore 免签链（unsigned archive + ldid ad-hoc 重签）——
@@ -88,15 +88,16 @@ jobs:
         run: rustup target add aarch64-apple-ios
       - name: Build iOS (unsigned archive)
         if: matrix.name == 'ios'
-        env:
-          CODE_SIGNING_ALLOWED: 'no'
-          CODE_SIGN_IDENTITY: ''
         run: |
           npx tauri ios init
           # 允许 http 明文流量（init 生成于 src-tauri/gen/apple）
           PLIST=$(find src-tauri/gen/apple -name "*_Info.plist" | head -1)
           /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$PLIST" || true
           /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$PLIST" || true
+          # 免签：xcodebuild 的 build setting 覆盖不认环境变量，须直接注入工程文件
+          # （Xcode 16 + Automatic 签名在无 team 时直接拒编——改 Manual + 空身份 + 关签名）
+          PBX=$(find src-tauri/gen/apple -name project.pbxproj | head -1)
+          sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual; CODE_SIGN_IDENTITY = ""; CODE_SIGNING_ALLOWED = NO;/g' "$PBX"
           npx tauri ios build --target aarch64 --export-method debugging || true
       - name: Repack IPA (ad-hoc sign via ldid)
         if: matrix.name == 'ios'
