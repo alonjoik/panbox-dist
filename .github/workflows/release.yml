@@ -23,7 +23,7 @@ jobs:
         include:
           - { os: windows-latest, name: windows }
           - { os: ubuntu-latest,  name: android }
-          - { os: macos-14,       name: ios }
+          - { os: macos-15,       name: ios }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -65,7 +65,11 @@ jobs:
           java-version: '17'
       - name: Install NDK
         if: matrix.name == 'android'
-        run: yes | sdkmanager --install "ndk;27.0.12077973" >/dev/null
+        run: |
+          # sdkmanager 不在 PATH：定位 runner 自带 cmdline-tools（latest 链接缺失时兜底查找）
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKM" ] || SDKM=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -path "*/bin/*" | head -1)
+          yes | "$SDKM" --install "ndk;27.0.12077973" >/dev/null
       - name: Add Android rust targets
         if: matrix.name == 'android'
         run: rustup target add aarch64-linux-android armv7-linux-androideabi
