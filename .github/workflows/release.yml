@@ -139,9 +139,12 @@ jobs:
       - name: Attach to release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}   # 无 .git 时 gh 无法经 remote 推断仓库
         run: |
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
           ls -la dist/
-          # release job 未 checkout 仓库（工作目录无 .git），须显式 --target 指定建 tag 的 commit
-          gh release create "$VERSION" --draft --target "$GITHUB_SHA" --title "PanBox $VERSION" dist/* || \
-          gh release upload "$VERSION" dist/*
+          # artifact 保留相对路径（apk 深埋 src-tauri/...），find 挑三类产物文件直传；
+          # --target 显式指定建 tag 的 commit（工作目录无 .git）
+          FILES=$(find dist -type f \( -name "*.exe" -o -name "*.apk" -o -name "*.ipa" \))
+          gh release create "$VERSION" --draft --target "$GITHUB_SHA" --title "PanBox $VERSION" $FILES || \
+          gh release upload "$VERSION" $FILES
