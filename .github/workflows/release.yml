@@ -142,5 +142,6 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
           ls -la dist/
-          gh release create "$VERSION" --draft --title "PanBox $VERSION" dist/* || \
+          # release job 未 checkout 仓库（工作目录无 .git），须显式 --target 指定建 tag 的 commit
+          gh release create "$VERSION" --draft --target "$GITHUB_SHA" --title "PanBox $VERSION" dist/* || \
           gh release upload "$VERSION" dist/*
