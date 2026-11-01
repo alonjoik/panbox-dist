@@ -95,10 +95,18 @@ jobs:
         if: matrix.name == 'ios'
         run: |
           npx tauri ios init
-          # 允许 http 明文流量（init 生成于 src-tauri/gen/apple）
-          PLIST=$(find src-tauri/gen/apple -name "*_Info.plist" | head -1)
-          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$PLIST" || true
-          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$PLIST" || true
+          # 允许 http 明文流量（封面/媒体全走 127.0.0.1 本地代理，iOS ATS 默认拦明文
+          # loopback——无豁免则全部图片加载失败退默认图）。主 target 的 plist 是
+          # {App}_iOS/Info.plist（主名 Info.plist）：曾用 find "*_Info.plist" 落空、
+          # 报错被 || true 吞掉致 ATS 豁免从未写入，故此处找不到即显式失败。
+          PLIST=$(find src-tauri/gen/apple -path "*_iOS/Info.plist" | head -1)
+          [ -z "$PLIST" ] && { echo "::error::未找到 Info.plist——tauri ios init 产物结构变更"; exit 1; }
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$PLIST" 2>/dev/null || true
+          # 写入后验证：豁免键必须真实存在（防再次静默丢失）
+          [ "$(/usr/libexec/PlistBuddy -c "Print :NSAppTransportSecurity:NSAllowsArbitraryLoads" "$PLIST")" = "true" ] \
+            || { echo "::error::ATS 豁免写入失败"; exit 1; }
           # 免签：向全部 buildSettings 配置块注入免签设置（format 77 工程未必有
           # CODE_SIGN_STYLE 行可替换，锚 buildSettings = { 必命中；不能绕过 tauri
           # 封装直调 xcodebuild——Rust script phase 依赖 CLI 运行时写出的协调文件）
