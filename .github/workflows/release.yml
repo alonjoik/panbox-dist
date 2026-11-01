@@ -57,16 +57,15 @@ jobs:
         run: npx tauri build --bundles nsis
 
       # —— Android：JDK17 + NDK + 双架构 APK（gen/ 不入库，CI 内 init + sed 补丁）——
+      # runner 自带 Android SDK；setup-android@v3 在新镜像装已废弃的 tools 包必炸，不用
       - uses: actions/setup-java@v4
         if: matrix.name == 'android'
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
-        if: matrix.name == 'android'
       - name: Install NDK
         if: matrix.name == 'android'
-        run: sdkmanager --install "ndk;27.0.12077973" >/dev/null
+        run: yes | sdkmanager --install "ndk;27.0.12077973" >/dev/null
       - name: Add Android rust targets
         if: matrix.name == 'android'
         run: rustup target add aarch64-linux-android armv7-linux-androideabi
@@ -79,24 +78,30 @@ jobs:
           npx tauri android build --apk --target aarch64,armv7
 
       # —— iOS：TrollStore 免签链（unsigned archive + ldid ad-hoc 重签）——
+      # 新版 CLI target 取值只有 aarch64/aarch64-sim/x86_64（ios_aarch64 已废弃）
       - name: Add iOS rust target
         if: matrix.name == 'ios'
         run: rustup target add aarch64-apple-ios
       - name: Build iOS (unsigned archive)
         if: matrix.name == 'ios'
+        env:
+          CODE_SIGNING_ALLOWED: 'no'
+          CODE_SIGN_IDENTITY: ''
         run: |
           npx tauri ios init
-          # 允许 http 明文流量
-          PLIST=$(find gen/apple -name "*_Info.plist" | head -1)
+          # 允许 http 明文流量（init 生成于 src-tauri/gen/apple）
+          PLIST=$(find src-tauri/gen/apple -name "*_Info.plist" | head -1)
           /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$PLIST" || true
           /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$PLIST" || true
-          npx tauri ios build --target ios_aarch64 --export-method debugging || true
+          npx tauri ios build --target aarch64 --export-method debugging || true
       - name: Repack IPA (ad-hoc sign via ldid)
         if: matrix.name == 'ios'
         run: |
           brew install ldid
           APP=$(find src-tauri/gen/apple/build -type d -name "*.app" -path "*Debug*" | head -1)
           [ -z "$APP" ] && APP=$(find src-tauri/gen/apple/build -type d -name "*.app" | head -1)
+          # build 步骤的 || true 会吞 archive 失败，这里显式拦截避免空 APP 一路错到底
+          [ -z "$APP" ] && { echo "::error::未找到 .app——tauri ios build 失败，请查上方 xcodebuild 日志"; exit 1; }
           mkdir -p Payload
           cp -R "$APP" Payload/
           ldid -S "Payload/$(basename "$APP")/$(basename "$APP" .app)"
