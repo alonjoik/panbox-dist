@@ -146,5 +146,5 @@ jobs:
           # artifact 保留相对路径（apk 深埋 src-tauri/...），find 挑三类产物文件直传；
           # --target 显式指定建 tag 的 commit（工作目录无 .git）
           FILES=$(find dist -type f \( -name "*.exe" -o -name "*.apk" -o -name "*.ipa" \))
-          gh release create "$VERSION" --draft --target "$GITHUB_SHA" --title "PanBox $VERSION" $FILES || \
+          gh release create "$VERSION" --target "$GITHUB_SHA" --title "PanBox $VERSION" $FILES || \
           gh release upload "$VERSION" $FILES
